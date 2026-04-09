@@ -149,7 +149,13 @@ export default function Assistant() {
 
     // Resolve "product_agent_mapping" → real tableId (hex).
     // Priority: 1) just-created in this run  2) known agentTables  3) treat as literal ID
-    const resolveTableId = (nameOrId) => nameToId[nameOrId] ?? nameOrId
+    const resolveTableId = (nameOrId) => {
+      if (!nameOrId || nameOrId === 'undefined' || nameOrId === 'null') return null
+      return nameToId[nameOrId] ?? nameOrId
+    }
+
+    // Validate it looks like a 24-char MongoDB ObjectId hex (GPTBots table IDs)
+    const isValidTableId = (id) => /^[a-f0-9]{24}$/i.test(String(id ?? ''))
 
     for (let i = 0; i < ops.length; i++) {
       const op = ops[i]
@@ -168,7 +174,8 @@ export default function Assistant() {
 
         } else if (op.op === 'add_records') {
           const tableId = resolveTableId(op.params.table_id)
-          if (!tableId) throw new Error(`无法解析 table_id: "${op.params.table_id}"`)
+          if (!tableId) throw new Error(`缺少 table_id。请先在「数据库浏览」页把该表添加到追踪列表，然后重试。`)
+          if (!isValidTableId(tableId)) throw new Error(`table_id "${tableId}" 不是有效的 GPTBots 表 ID（应为 24 位十六进制）。请在「数据库浏览」页添加该表后重试。`)
           const res    = await gptbotsApi.importRecords(agent, { table_id: tableId, records: op.params.records })
           const taskId = res.data?.data
           if (!taskId) throw new Error('API 未返回任务 ID，请求可能失败')
@@ -182,13 +189,18 @@ export default function Assistant() {
 
         } else if (op.op === 'update_records') {
           const tableId = resolveTableId(op.params.table_id)
+          if (!tableId || !isValidTableId(tableId)) throw new Error(`table_id "${op.params.table_id}" 无效，请先在「数据库浏览」添加该表。`)
           const res = await gptbotsApi.updateRecords(agent, { ...op.params, table_id: tableId })
           result = `更新完成：成功 ${res.data?.success_count ?? '?'} 条`
 
         } else if (op.op === 'delete_records') {
           const tableId = resolveTableId(op.params.table_id)
+          if (!tableId || !isValidTableId(tableId)) throw new Error(`table_id "${op.params.table_id}" 无效，请先在「数据库浏览」添加该表。`)
           await gptbotsApi.deleteRecords(agent, { ...op.params, table_id: tableId })
           result = '删除完成'
+
+        } else {
+          throw new Error(`不支持的操作类型 "${op.op}"，已跳过`)
         }
         setExecProgress((s) => s.map((r) => r.i === i ? { ...r, status: 'success', result } : r))
       } catch (e) {
@@ -233,7 +245,9 @@ export default function Assistant() {
             <p className="text-soft mt-4">
               {agent ? `Agent: ${agent.name}` : '未选择 Agent（创建表时需要）'}
               {' · '}模型: <span className="code">{settings.aiModel}</span>
-              {agentTables.length > 0 && <span> · 已加载 <strong>{agentTables.length}</strong> 张表</span>}
+              {agentTables.length > 0
+                ? <span> · 已加载 <strong>{agentTables.length}</strong> 张表</span>
+                : <span style={{ color: 'var(--coral)', fontWeight: 700 }}> · ⚠ 暂无追踪表（数据操作需先在「数据库浏览」添加表）</span>}
             </p>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={() => { clearChatSession(chatKey); toast('对话已清空', 'info') }}>
@@ -282,11 +296,25 @@ export default function Assistant() {
                     <MessageContent text={msg.message} />
                   </div>
                   {msg.role === 'ai' && !loading && !executing && (
-                    <div style={{ marginTop: 6 }}>
+                    <div className="flex gap-6 mt-6" style={{ flexWrap: 'wrap' }}>
                       <button className="btn btn-ghost btn-sm" style={{ fontSize: '.70rem', padding: '4px 9px' }}
                         onClick={reanalyze} title="让 AI 重新以操作计划格式输出">
                         <RotateCcw size={11} /> 重新分析为操作计划
                       </button>
+                      {msg.raw && (
+                        <button className="btn btn-ghost btn-sm" style={{ fontSize: '.70rem', padding: '4px 9px' }}
+                          onClick={() => {
+                            const el = document.getElementById(`raw-${msg.id}`)
+                            if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none'
+                          }}>
+                          查看原始响应
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {msg.raw && (
+                    <div id={`raw-${msg.id}`} style={{ display: 'none', marginTop: 6, background: 'var(--surface2)', borderRadius: 10, padding: '8px 12px', boxShadow: 'var(--in-groove)', maxHeight: 160, overflowY: 'auto' }}>
+                      <pre style={{ fontSize: '.68rem', fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: 'var(--text-mid)' }}>{msg.raw}</pre>
                     </div>
                   )}
                 </div>
@@ -371,10 +399,19 @@ function PlanCard({ msg, isPending, onConfirm, onCancel, agentTables = [] }) {
 
   // Resolve table name → real ID using known tables
   const resolveDisplay = (nameOrId) => {
-    if (!nameOrId) return <span style={{ color: 'var(--coral)' }}>⚠ 未指定</span>
+    if (!nameOrId || nameOrId === 'undefined' || nameOrId === 'null')
+      return <span style={{ color: 'var(--coral)', fontWeight: 700 }}>⚠ 未指定（请先在「数据库浏览」添加此表）</span>
     const known = agentTables.find((t) => t.name === nameOrId || t.tableId === nameOrId)
     if (known) return <><span className="code">{known.name}</span><span className="text-soft" style={{ fontSize: '.70rem', marginLeft: 4 }}>({known.tableId})</span></>
-    return <span className="code">{nameOrId}</span>
+    // Not in local tracking — show name with warning
+    return (
+      <span>
+        <span className="code">{nameOrId}</span>
+        <span style={{ color: 'var(--coral)', fontSize: '.70rem', marginLeft: 4, fontWeight: 700 }}>
+          ⚠ 未在追踪列表（执行前请先到「数据库浏览」添加）
+        </span>
+      </span>
+    )
   }
 
   const opIcon = {
