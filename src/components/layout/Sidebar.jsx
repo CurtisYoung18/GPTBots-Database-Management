@@ -1,24 +1,24 @@
 import { NavLink, useNavigate } from 'react-router-dom'
+import {
+  LayoutDashboard, KeyRound, Database, Bot, Package,
+  Settings, ChevronRight,
+} from 'lucide-react'
 import { useStore } from '../../store/index.js'
 
 const NAV = [
-  { to: '/',          icon: '🏠', label: 'Dashboard' },
-  { to: '/agents',    icon: '🔑', label: 'Agents 管理' },
-  { to: '/database',  icon: '🗄️', label: '数据库浏览' },
-  { to: '/assistant', icon: '🤖', label: 'AI 助手' },
-  { to: '/schema',    icon: '📦', label: 'Schema 归档' },
-  { to: '/settings',  icon: '⚙️', label: '设置' },
+  { to: '/',          Icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/agents',    Icon: KeyRound,        label: 'Agents 管理' },
+  { to: '/database',  Icon: Database,        label: '数据库浏览' },
+  { to: '/assistant', Icon: Bot,             label: 'AI 助手' },
+  { to: '/schema',    Icon: Package,         label: 'Schema 归档' },
+  { to: '/settings',  Icon: Settings,        label: '设置' },
 ]
 
 export default function Sidebar() {
   const { agents, activeAgentId, setActiveAgent, tables, schemas } = useStore()
   const navigate = useNavigate()
 
-  const handleAgentChange = (e) => {
-    setActiveAgent(e.target.value || null)
-  }
-
-  const activeAgent = agents.find((a) => a.id === activeAgentId)
+  const activeAgent   = agents.find((a) => a.id === activeAgentId)
   const activeTables  = tables.filter((t) => t.agentId === activeAgentId).length
   const activeSchemas = schemas.filter((s) => s.agentId === activeAgentId).length
 
@@ -26,7 +26,9 @@ export default function Sidebar() {
     <aside className="sidebar">
       {/* Logo */}
       <NavLink to="/" className="sidebar-logo">
-        <div className="logo-blob">🤖</div>
+        <div className="logo-blob">
+          <Bot size={22} color="#fff" />
+        </div>
         <div className="logo-text">
           <strong>GPTBots DB</strong>
           <span>Database Manager</span>
@@ -39,7 +41,7 @@ export default function Sidebar() {
         <select
           className="agent-select-pill"
           value={activeAgentId || ''}
-          onChange={handleAgentChange}
+          onChange={(e) => setActiveAgent(e.target.value || null)}
         >
           <option value="">— 选择 Agent —</option>
           {agents.map((a) => (
@@ -55,14 +57,14 @@ export default function Sidebar() {
 
       <div className="nav-section">导航</div>
 
-      {NAV.map(({ to, icon, label }) => (
+      {NAV.map(({ to, Icon, label }) => (
         <NavLink
           key={to}
           to={to}
           end={to === '/'}
           className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
         >
-          <span className="nav-icon">{icon}</span>
+          <span className="nav-icon"><Icon size={16} /></span>
           {label}
           {to === '/agents' && agents.length > 0 && (
             <span className="nav-badge">{agents.length}</span>
@@ -75,14 +77,13 @@ export default function Sidebar() {
 
       <div className="sidebar-spacer" />
 
-      {/* Quick add agent */}
       {agents.length === 0 && (
         <button
           className="btn btn-primary w-full"
           style={{ justifyContent: 'center', marginBottom: 8 }}
           onClick={() => navigate('/agents')}
         >
-          ＋ 添加第一个 Agent
+          <ChevronRight size={14} /> 添加第一个 Agent
         </button>
       )}
 
