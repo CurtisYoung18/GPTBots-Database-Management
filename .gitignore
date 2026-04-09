@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.DS_Store
+
+# Local persistent data — contains API keys, DO NOT commit
+data/
+
+# Env files
+.env
+.env.local
+.env.*.local
