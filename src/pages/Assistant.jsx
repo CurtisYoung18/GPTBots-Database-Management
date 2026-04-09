@@ -165,7 +165,7 @@ export default function Assistant() {
         if (op.op === 'create_table') {
           const res     = await gptbotsApi.createTable(agent, op.params)
           const tableId = res.data?.data || res.data?.tableId || res.data?.id
-          if (!tableId) throw new Error('API 未返回 table_id，创建可能失败')
+          if (!tableId) throw new Error(`创建表成功但 API 未返回 table_id。\n请复制 GPTBots 控制台中的真实表 ID，然后在「数据库浏览」→「修复」按钮中补录。`)
           createdTableIds.push(tableId)
           newTables.push({ tableId, name: op.params.name, description: op.params.description, fields: op.params.fields, agentId: activeAgentId })
           // Register so subsequent add_records in this same plan can reference by name

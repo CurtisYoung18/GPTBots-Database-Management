@@ -12,11 +12,11 @@ const TYPE_OPTS = ['TEXT', 'INT', 'FLOAT', 'DATETIME', 'BOOLEAN']
 const EMPTY_FIELD = { name: '', description: '', type: 'TEXT', required: false, unique: false }
 
 export default function Database() {
-  const { agents, activeAgentId, tables, addTable, removeTable, toast } = useStore()
+  const { agents, activeAgentId, tables, addTable, updateTable, removeTable, toast } = useStore()
   const agent       = agents.find((a) => a.id === activeAgentId)
   const agentTables = tables.filter((t) => t.agentId === activeAgentId)
 
-  const [selectedTableId, setSelectedTableId] = useState(null)
+  const [selectedTableId,  setSelectedTableId]  = useState(null)
   const [records,          setRecords]          = useState([])
   const [tableInfo,        setTableInfo]        = useState(null)
   const [totalCount,       setTotalCount]       = useState(0)
@@ -24,6 +24,8 @@ export default function Database() {
   const [pageSize]                              = useState(20)
   const [keyword,          setKeyword]          = useState('')
   const [loadingRecords,   setLoadingRecords]   = useState(false)
+  const [repairTarget,     setRepairTarget]     = useState(null)   // table to repair tableId
+  const [repairInput,      setRepairInput]      = useState('')
 
   const [showAddTable,     setShowAddTable]     = useState(false)
   const [showCreateTable,  setShowCreateTable]  = useState(false)
@@ -179,14 +181,23 @@ export default function Database() {
               </div>
             ) : agentTables.map((t) => {
               const isSel = t.id === (selectedTable?.id)
+              const missingId = !t.tableId
               return (
                 <div key={t.id} onClick={() => setSelectedTableId(t.id)}
-                  style={{ padding: '9px 14px', margin: '0 8px 4px', borderRadius: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, background: isSel ? 'linear-gradient(135deg,rgba(193,122,255,.18),rgba(122,196,255,.14))' : 'transparent', boxShadow: isSel ? 'var(--sh-xs),var(--in-top)' : 'none', transition: 'all .18s ease' }}>
-                  <TableProperties size={14} color={isSel ? 'var(--lilac)' : 'var(--text-soft)'} />
+                  style={{ padding: '9px 14px', margin: '0 8px 4px', borderRadius: 12, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, background: isSel ? 'linear-gradient(135deg,rgba(193,122,255,.18),rgba(122,196,255,.14))' : 'transparent', boxShadow: isSel ? 'var(--sh-xs),var(--in-top)' : 'none', transition: 'all .18s ease', outline: missingId ? '1.5px dashed rgba(255,100,100,.5)' : 'none' }}>
+                  <TableProperties size={14} color={missingId ? 'var(--coral)' : isSel ? 'var(--lilac)' : 'var(--text-soft)'} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 800, fontSize: '.82rem', color: isSel ? 'var(--text-dark)' : 'var(--text-mid)' }} className="truncate">{t.name}</div>
-                    <div className="text-soft" style={{ fontSize: '.68rem' }}>{t.fields?.length || 0} 字段</div>
+                    {missingId
+                      ? <div style={{ fontSize: '.65rem', color: 'var(--coral)', fontWeight: 700 }}>⚠ 缺少 Table ID</div>
+                      : <div className="text-soft" style={{ fontSize: '.68rem' }}>{t.fields?.length || 0} 字段</div>}
                   </div>
+                  {missingId && (
+                    <button style={{ fontSize: 11, color: 'var(--coral)', cursor: 'pointer', background: 'rgba(255,100,100,.10)', border: '1px solid rgba(255,100,100,.25)', borderRadius: 6, padding: '2px 6px', fontWeight: 800 }}
+                      onClick={(e) => { e.stopPropagation(); setRepairTarget(t); setRepairInput('') }}>
+                      修复
+                    </button>
+                  )}
                   <button style={{ fontSize: 12, opacity: .35, cursor: 'pointer', background: 'none', border: 'none', lineHeight: 1, display: 'flex' }}
                     onClick={(e) => { e.stopPropagation(); if (confirm(`移除对表 "${t.name}" 的追踪？`)) { removeTable(t.id); if (selectedTable?.id === t.id) setSelectedTableId(null) } }}>
                     <Trash2 size={12} />
@@ -394,6 +405,30 @@ export default function Database() {
           </div>
         </Modal>
       ))}
+
+      {/* Repair missing tableId modal */}
+      <Modal open={!!repairTarget} onClose={() => setRepairTarget(null)}
+        title="修复 Table ID"
+        subtitle={`为 "${repairTarget?.name}" 补充 GPTBots 表 ID`}>
+        <div style={{ padding: '4px 0 12px', fontSize: '.84rem', color: 'var(--text-mid)', lineHeight: 1.6 }}>
+          该表缺少 GPTBots 表 ID，AI 助手无法对它执行数据操作。<br />
+          请从 GPTBots 控制台或之前的创建成功消息中复制真实的 24 位表 ID（如 <span className="code">69d70d0d515a426a005ce9f1</span>）。
+        </div>
+        <div className="form-group">
+          <label className="form-label">GPTBots Table ID</label>
+          <input className="clay-input" placeholder="例：69d70d0d515a426a005ce9f1" value={repairInput}
+            onChange={(e) => setRepairInput(e.target.value.trim())} />
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={() => setRepairTarget(null)}>取消</button>
+          <button className="btn btn-primary" onClick={() => {
+            if (!/^[a-f0-9]{24}$/i.test(repairInput)) { toast('请输入有效的 24 位十六进制 Table ID', 'error'); return }
+            updateTable(repairTarget.id, { tableId: repairInput })
+            toast(`Table ID 已修复`, 'success')
+            setRepairTarget(null)
+          }}>保存修复</button>
+        </div>
+      </Modal>
     </div>
   )
 }
