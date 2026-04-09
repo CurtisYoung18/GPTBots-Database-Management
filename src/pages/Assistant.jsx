@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import {
   Bot, User, Paperclip, Trash2, Send, RotateCcw,
   Hammer, Plus, Pencil, Check, X, AlertTriangle,
-  Loader2, TableProperties, Clock,
+  Loader2, TableProperties, Clock, KeyRound,
 } from 'lucide-react'
 import { useStore } from '../store/index.js'
 import { sendAIMessage, buildSchemaPrompt, buildTableContext } from '../api/ai.js'
@@ -142,6 +142,15 @@ export default function Assistant() {
     const createdTableIds = []
     const newTables       = []
 
+    // Maps table name → real GPTBots tableId for tables created THIS plan run
+    // Also seed from known agentTables so CRUD on existing tables works
+    const nameToId = {}
+    agentTables.forEach((t) => { if (t.name) nameToId[t.name] = t.tableId })
+
+    // Resolve "product_agent_mapping" → real tableId (hex).
+    // Priority: 1) just-created in this run  2) known agentTables  3) treat as literal ID
+    const resolveTableId = (nameOrId) => nameToId[nameOrId] ?? nameOrId
+
     for (let i = 0; i < ops.length; i++) {
       const op = ops[i]
       setExecProgress((s) => s.map((r) => r.i === i ? { ...r, status: 'running' } : r))
@@ -150,21 +159,35 @@ export default function Assistant() {
         if (op.op === 'create_table') {
           const res     = await gptbotsApi.createTable(agent, op.params)
           const tableId = res.data?.data || res.data?.tableId || res.data?.id
+          if (!tableId) throw new Error('API 未返回 table_id，创建可能失败')
           createdTableIds.push(tableId)
           newTables.push({ tableId, name: op.params.name, description: op.params.description, fields: op.params.fields, agentId: activeAgentId })
+          // Register so subsequent add_records in this same plan can reference by name
+          nameToId[op.params.name] = tableId
           result = `表 "${op.params.name}" 创建成功 (ID: ${tableId})`
+
         } else if (op.op === 'add_records') {
-          const res    = await gptbotsApi.importRecords(agent, { table_id: op.params.table_id, records: op.params.records })
+          const tableId = resolveTableId(op.params.table_id)
+          if (!tableId) throw new Error(`无法解析 table_id: "${op.params.table_id}"`)
+          const res    = await gptbotsApi.importRecords(agent, { table_id: tableId, records: op.params.records })
           const taskId = res.data?.data
-          if (taskId) {
-            const job = await gptbotsApi.pollImport(agent, taskId)
-            result = `成功添加 ${job?.success_count ?? '?'} 条记录${job?.fail_count ? `，失败 ${job.fail_count} 条` : ''}`
-          } else { result = '添加请求已提交' }
+          if (!taskId) throw new Error('API 未返回任务 ID，请求可能失败')
+          const job = await gptbotsApi.pollImport(agent, taskId)
+          if (!job) throw new Error('导入任务超时，未能获取结果')
+          if (job.status === 'FAIL') {
+            const reason = job.fail_detail?.[0]?.fail_reason || '未知原因'
+            throw new Error(`导入失败: ${reason}`)
+          }
+          result = `成功添加 ${job.success_count ?? '?'} 条记录${job.fail_count ? `，失败 ${job.fail_count} 条` : ''}`
+
         } else if (op.op === 'update_records') {
-          const res = await gptbotsApi.updateRecords(agent, op.params)
+          const tableId = resolveTableId(op.params.table_id)
+          const res = await gptbotsApi.updateRecords(agent, { ...op.params, table_id: tableId })
           result = `更新完成：成功 ${res.data?.success_count ?? '?'} 条`
+
         } else if (op.op === 'delete_records') {
-          await gptbotsApi.deleteRecords(agent, op.params)
+          const tableId = resolveTableId(op.params.table_id)
+          await gptbotsApi.deleteRecords(agent, { ...op.params, table_id: tableId })
           result = '删除完成'
         }
         setExecProgress((s) => s.map((r) => r.i === i ? { ...r, status: 'success', result } : r))
@@ -251,6 +274,7 @@ export default function Assistant() {
                   isPending={pendingPlan?.msgId === msg.id && !executing}
                   onConfirm={() => executePlan(msg)}
                   onCancel={cancelPlan}
+                  agentTables={agentTables}
                 />
               ) : (
                 <div>
@@ -341,39 +365,96 @@ export default function Assistant() {
 }
 
 // Operation plan card
-function PlanCard({ msg, isPending, onConfirm, onCancel }) {
+function PlanCard({ msg, isPending, onConfirm, onCancel, agentTables = [] }) {
+  const [expanded, setExpanded] = useState({})
+  const toggle = (i) => setExpanded((s) => ({ ...s, [i]: !s[i] }))
+
+  // Resolve table name → real ID using known tables
+  const resolveDisplay = (nameOrId) => {
+    if (!nameOrId) return <span style={{ color: 'var(--coral)' }}>⚠ 未指定</span>
+    const known = agentTables.find((t) => t.name === nameOrId || t.tableId === nameOrId)
+    if (known) return <><span className="code">{known.name}</span><span className="text-soft" style={{ fontSize: '.70rem', marginLeft: 4 }}>({known.tableId})</span></>
+    return <span className="code">{nameOrId}</span>
+  }
+
   const opIcon = {
     create_table:   <Hammer size={14} />,
     add_records:    <Plus size={14} />,
     update_records: <Pencil size={14} />,
     delete_records: <Trash2 size={14} />,
   }
+
   return (
     <div className="op-plan">
       <div className="op-plan-header"><Hammer size={14} /> AI 操作计划 — 请确认后执行</div>
       <div style={{ padding: '12px 16px 6px' }}>
         <p style={{ fontSize: '.86rem', fontWeight: 600, color: 'var(--text-dark)', marginBottom: 12, lineHeight: 1.55 }}>{msg.message}</p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {(msg.operations || []).map((op, i) => (
-            <div className="op-item" key={i}>
-              <div className="op-item-icon">{opIcon[op.op] || <AlertTriangle size={14} />}</div>
-              <div className="op-item-content">
-                <div className="op-item-label">{op.label || op.op}</div>
-                {op.op === 'create_table' && op.params?.fields && (
-                  <div className="op-item-detail">
-                    {op.params.fields.length} 字段: {op.params.fields.map((f) => `${f.name}(${f.type}${f.unique ? ' key' : ''})`).join(' · ')}
-                  </div>
-                )}
-                {op.op === 'add_records' && (
-                  <div className="op-item-detail">{op.params?.records?.length || 0} 条记录 → 表 <span className="code">{op.params?.table_id}</span></div>
-                )}
-                {op.op === 'update_records' && (
-                  <div className="op-item-detail">{op.params?.update_data?.length || 0} 条更新 → 表 <span className="code">{op.params?.table_id}</span></div>
-                )}
-                {op.op === 'delete_records' && (
-                  <div className="op-item-detail">{op.params?.delete_data?.length || 0} 条删除 → 表 <span className="code">{op.params?.table_id}</span></div>
+            <div key={i} style={{ background: 'rgba(193,122,255,.06)', borderRadius: 10, border: '1px solid rgba(193,122,255,.12)', overflow: 'hidden' }}>
+              {/* Op header */}
+              <div className="op-item" style={{ padding: '8px 12px', cursor: op.op !== 'create_table' ? 'pointer' : 'default' }}
+                onClick={() => (op.op !== 'create_table') && toggle(i)}>
+                <div className="op-item-icon">{opIcon[op.op] || <AlertTriangle size={14} />}</div>
+                <div className="op-item-content" style={{ flex: 1 }}>
+                  <div className="op-item-label">{op.label || op.op}</div>
+                  {op.op === 'create_table' && op.params?.fields && (
+                    <div className="op-item-detail">
+                      {op.params.fields.length} 字段: {op.params.fields.map((f) => `${f.name}(${f.type}${f.unique ? ' key' : ''})`).join(' · ')}
+                    </div>
+                  )}
+                  {op.op === 'add_records' && (
+                    <div className="op-item-detail">
+                      {op.params?.records?.length || 0} 条记录 → 表 {resolveDisplay(op.params?.table_id)}
+                    </div>
+                  )}
+                  {op.op === 'update_records' && (
+                    <div className="op-item-detail">{op.params?.update_data?.length || 0} 条更新 → 表 {resolveDisplay(op.params?.table_id)}</div>
+                  )}
+                  {op.op === 'delete_records' && (
+                    <div className="op-item-detail">{op.params?.delete_data?.length || 0} 条删除 → 表 {resolveDisplay(op.params?.table_id)}</div>
+                  )}
+                </div>
+                {/* Expand toggle for record ops */}
+                {op.op !== 'create_table' && (op.params?.records || op.params?.update_data || op.params?.delete_data) && (
+                  <span style={{ fontSize: '.70rem', color: 'var(--text-soft)', fontWeight: 700 }}>
+                    {expanded[i] ? '收起 ▲' : '展开 ▼'}
+                  </span>
                 )}
               </div>
+
+              {/* Expandable record preview */}
+              {expanded[i] && (
+                <div style={{ borderTop: '1px solid rgba(193,122,255,.12)', padding: '8px 12px', maxHeight: 240, overflowY: 'auto' }}>
+                  <RecordPreview op={op} />
+                </div>
+              )}
+
+              {/* For create_table: show full field table */}
+              {op.op === 'create_table' && op.params?.fields && (
+                <div style={{ borderTop: '1px solid rgba(193,122,255,.12)', padding: '8px 12px', overflowX: 'auto' }}>
+                  <table style={{ width: '100%', fontSize: '.74rem', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ color: 'var(--text-soft)', textAlign: 'left' }}>
+                        {['字段名', '类型', '必填', '唯一', '描述'].map((h) => (
+                          <th key={h} style={{ padding: '3px 8px', fontWeight: 800, fontSize: '.68rem', textTransform: 'uppercase', letterSpacing: '.5px' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {op.params.fields.map((f, fi) => (
+                        <tr key={fi} style={{ borderTop: '1px solid rgba(193,122,255,.08)' }}>
+                          <td style={{ padding: '4px 8px', fontWeight: 800 }}>{f.name}{f.unique && <KeyRound size={10} style={{ display: 'inline', marginLeft: 3 }} color="var(--lilac)" />}</td>
+                          <td style={{ padding: '4px 8px' }}><span className="badge badge-gray" style={{ fontSize: '.62rem' }}>{f.type}</span></td>
+                          <td style={{ padding: '4px 8px' }}>{f.required ? <Check size={12} color="#1B8A5E" /> : <span style={{ color: 'var(--text-soft)' }}>—</span>}</td>
+                          <td style={{ padding: '4px 8px' }}>{f.unique  ? <Check size={12} color="var(--lilac)" /> : <span style={{ color: 'var(--text-soft)' }}>—</span>}</td>
+                          <td style={{ padding: '4px 8px', color: 'var(--text-soft)' }}>{f.description}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -389,6 +470,60 @@ function PlanCard({ msg, isPending, onConfirm, onCancel }) {
       )}
     </div>
   )
+}
+
+// Record data preview inside PlanCard
+function RecordPreview({ op }) {
+  if (op.op === 'add_records') {
+    const records = op.params?.records || []
+    if (records.length === 0) return <div className="text-soft">无记录数据</div>
+    const keys = Object.keys(records[0])
+    return (
+      <table style={{ width: '100%', fontSize: '.72rem', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ color: 'var(--text-soft)' }}>
+            {keys.map((k) => <th key={k} style={{ padding: '2px 6px', fontWeight: 800, textAlign: 'left', fontSize: '.65rem', textTransform: 'uppercase' }}>{k}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {records.map((rec, ri) => (
+            <tr key={ri} style={{ borderTop: '1px solid rgba(193,122,255,.08)' }}>
+              {keys.map((k) => (
+                <td key={k} style={{ padding: '3px 6px', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {rec[k] == null || rec[k] === '' ? <span style={{ color: 'var(--text-soft)' }}>—</span> : String(rec[k])}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )
+  }
+  if (op.op === 'update_records') {
+    const rows = op.params?.update_data || []
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {rows.map((r, ri) => (
+          <div key={ri} style={{ fontSize: '.72rem' }}>
+            <span className="code">{r.record_id}</span>
+            <span style={{ color: 'var(--text-soft)', marginLeft: 6 }}>→</span>
+            {Object.entries(r.updated_fields || {}).map(([k, v]) => (
+              <span key={k} style={{ marginLeft: 6 }}><strong>{k}</strong>: {String(v)}</span>
+            ))}
+          </div>
+        ))}
+      </div>
+    )
+  }
+  if (op.op === 'delete_records') {
+    const rows = op.params?.delete_data || []
+    return (
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+        {rows.map((r, ri) => <span key={ri} className="code" style={{ fontSize: '.72rem' }}>{r.record_id}</span>)}
+      </div>
+    )
+  }
+  return null
 }
 
 function MessageContent({ text }) {
