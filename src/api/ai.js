@@ -84,7 +84,9 @@ Always reply in the same language the user writes in. Always output raw JSON —
 // ─── Parse AI response ────────────────────────────────────────────────────────
 // Handles: clean JSON, JSON inside ```, invoke.knowledge.* tool-call format
 export const parseAIResponse = (content) => {
-  const text = content.trim()
+  // Strip <think>...</think> before parsing; preserve in raw
+  const stripped = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+  const text = stripped || content.trim()
 
   // 1. Direct JSON
   if (text.startsWith('{')) {
@@ -109,7 +111,7 @@ export const parseAIResponse = (content) => {
     return convertInvokeFormat(text)
   }
 
-  // 5. Fallback — treat as plain message
+  // 5. Fallback — treat as plain message (keep original with think tags for UI to parse)
   return { type: 'message', message: content }
 }
 

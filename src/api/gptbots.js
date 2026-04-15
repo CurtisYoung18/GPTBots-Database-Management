@@ -6,6 +6,10 @@ const proxy = axios.create({ baseURL: '/proxy/gptbots', timeout: 30000 })
 const call = (agent, path, data, method = 'POST') =>
   proxy.post('', { endpoint: agent.endpoint, apiKey: agent.apiKey, path, data, method })
 
+// ─── Knowledge Base (includes database tables) ──────────────────────────────
+export const listKnowledgeBases = (agent) =>
+  call(agent, '/v1/bot/knowledge/base/page', undefined, 'GET')
+
 // ─── Table APIs ──────────────────────────────────────────────────────────────
 export const createTable = (agent, { name, description, fields }) =>
   call(agent, '/v1/database/create-table', { name, description, fields })

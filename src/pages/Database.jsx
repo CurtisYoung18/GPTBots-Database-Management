@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import {
   Database as DatabaseIcon, Link2, Plus, RefreshCw, Pencil, Trash2,
   Search, TableProperties, KeyRound, Inbox, Loader2,
-  ChevronLeft, ChevronRight, Sparkles,
+  ChevronLeft, ChevronRight, Sparkles, CloudDownload,
 } from 'lucide-react'
 import { useStore } from '../store/index.js'
 import Modal from '../components/ui/Modal.jsx'
@@ -12,7 +12,7 @@ const TYPE_OPTS = ['TEXT', 'INT', 'FLOAT', 'DATETIME', 'BOOLEAN']
 const EMPTY_FIELD = { name: '', description: '', type: 'TEXT', required: false, unique: false }
 
 export default function Database() {
-  const { agents, activeAgentId, tables, addTable, updateTable, removeTable, toast } = useStore()
+  const { agents, activeAgentId, tables, schemas, addTable, updateTable, removeTable, toast } = useStore()
   const agent       = agents.find((a) => a.id === activeAgentId)
   const agentTables = tables.filter((t) => t.agentId === activeAgentId)
 
@@ -37,6 +37,7 @@ export default function Database() {
   const [createForm,   setCreateForm]   = useState({ name: '', description: '', fields: [{ ...EMPTY_FIELD, unique: true }] })
   const [recordForm,   setRecordForm]   = useState({})
   const [savingRecord, setSavingRecord] = useState(false)
+  const [syncing,      setSyncing]     = useState(false)
 
   const selectedTable   = agentTables.find((t) => t.id === selectedTableId) || agentTables[0]
   const displayFields   = selectedTable?.fields || tableInfo?.fields || []
@@ -95,6 +96,71 @@ export default function Database() {
     } catch (e) {
       toast(`创建失败: ${e.response?.data?.message || e.message}`, 'error')
     } finally { setSavingRecord(false) }
+  }
+
+  const handleSyncTables = async () => {
+    if (!agent) return
+    setSyncing(true)
+    let discovered = 0, updated = 0
+    const trackedIds = new Set(agentTables.map((t) => t.tableId).filter(Boolean))
+
+    // 1. Collect candidate table IDs from schema history (created via AI)
+    const candidateIds = new Set()
+    const agentSchemas = schemas.filter((s) => s.agentId === activeAgentId)
+    for (const schema of agentSchemas) {
+      schema.tableIds?.forEach((id) => { if (id && !trackedIds.has(id)) candidateIds.add(id) })
+      try {
+        const plan = JSON.parse(schema.content || '{}')
+        if (plan.operations) {
+          for (const op of plan.operations) {
+            const tid = op.params?.table_id
+            if (tid && /^[a-f0-9]{24}$/i.test(tid) && !trackedIds.has(tid)) candidateIds.add(tid)
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Also try Knowledge Base API for additional discovery
+    try {
+      const kbRes = await api.listKnowledgeBases(agent)
+      const knowledgeBases = kbRes.data?.knowledge_base || []
+      for (const kb of knowledgeBases) {
+        if (kb.id && !trackedIds.has(kb.id)) candidateIds.add(kb.id)
+      }
+    } catch {}
+
+    // 3. Verify each candidate by fetching records — if it works, it's a real DB table
+    for (const tableId of candidateIds) {
+      try {
+        const res  = await api.getRecords(agent, { table_id: tableId, page: 1, page_size: 1 })
+        const info = res.data?.table_info
+        if (info) {
+          addTable({ tableId: info.id || tableId, name: info.name, description: info.description, fields: info.fields, agentId: activeAgentId })
+          trackedIds.add(tableId)
+          discovered++
+        }
+      } catch {}
+    }
+
+    // 4. Refresh metadata for already-tracked tables
+    for (const tbl of agentTables) {
+      if (!tbl.tableId) continue
+      try {
+        const res  = await api.getRecords(agent, { table_id: tbl.tableId, page: 1, page_size: 1 })
+        const info = res.data?.table_info
+        if (info) {
+          updateTable(tbl.id, { name: info.name, description: info.description, fields: info.fields })
+          updated++
+        }
+      } catch {}
+    }
+
+    setSyncing(false)
+    const parts = []
+    if (discovered > 0) parts.push(`发现 ${discovered} 张新表`)
+    if (updated > 0) parts.push(`更新 ${updated} 张已有表`)
+    if (parts.length === 0) parts.push('未发现新表。GPTBots 无列表 API，如有遗漏请用「添加已有表」手动补录 Table ID')
+    toast(`同步完成：${parts.join('，')}`, discovered > 0 ? 'success' : 'info')
   }
 
   const openAddRecord = () => {
@@ -161,6 +227,10 @@ export default function Database() {
           <p className="text-soft mt-4">Agent: <strong>{agent.name}</strong></p>
         </div>
         <div className="flex gap-8">
+          <button className="btn btn-ghost" onClick={handleSyncTables} disabled={syncing}>
+            {syncing ? <Loader2 size={14} style={{ animation: 'spin .7s linear infinite' }} /> : <CloudDownload size={14} />}
+            {syncing ? '同步中…' : '从 GPTBots 同步'}
+          </button>
           <button className="btn btn-ghost" onClick={() => setShowAddTable(true)}><Link2 size={14} /> 添加已有表</button>
           <button className="btn btn-primary" onClick={() => setShowCreateTable(true)}><Plus size={14} /> 创建新表</button>
         </div>

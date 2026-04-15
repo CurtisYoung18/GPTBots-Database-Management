@@ -150,6 +150,50 @@ export const useStore = create(
           return { chats: rest }
         }),
 
+      // ── Chat Archives (per agent) ────────────────────────────────────────────
+      chatArchives: {},
+
+      archiveChatSession: (agentId, title) => {
+        const session = get().chats[agentId]
+        if (!session?.messages?.length) return null
+        const archive = {
+          id: uid(),
+          title: title || `对话 ${new Date().toLocaleString('zh-CN')}`,
+          messages: session.messages,
+          history: session.history || [],
+          archivedAt: Date.now(),
+        }
+        set((s) => ({
+          chatArchives: {
+            ...s.chatArchives,
+            [agentId]: [...(s.chatArchives[agentId] || []), archive],
+          },
+        }))
+        const { [agentId]: _, ...rest } = get().chats
+        set({ chats: rest })
+        return archive.id
+      },
+
+      restoreChatArchive: (agentId, archiveId) => {
+        const archives = get().chatArchives[agentId] || []
+        const archive = archives.find((a) => a.id === archiveId)
+        if (!archive) return
+        set((s) => ({
+          chats: {
+            ...s.chats,
+            [agentId]: { messages: archive.messages, history: archive.history },
+          },
+        }))
+      },
+
+      deleteChatArchive: (agentId, archiveId) =>
+        set((s) => ({
+          chatArchives: {
+            ...s.chatArchives,
+            [agentId]: (s.chatArchives[agentId] || []).filter((a) => a.id !== archiveId),
+          },
+        })),
+
       // ── Toast notifications ──────────────────────────────────────────────────
       toasts: [],
 
@@ -174,6 +218,7 @@ export const useStore = create(
         schemas:       s.schemas,
         settings:      s.settings,
         chats:         s.chats,
+        chatArchives:  s.chatArchives,
       }),
       onRehydrateStorage: () => (state) => {
         state?.setHasHydrated(true)

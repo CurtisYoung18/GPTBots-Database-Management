@@ -3,10 +3,14 @@ import {
   Bot, User, Paperclip, Trash2, Send, RotateCcw,
   Hammer, Plus, Pencil, Check, X, AlertTriangle,
   Loader2, TableProperties, Clock, KeyRound,
+  Archive, FolderOpen, ChevronDown, ChevronRight, Brain,
 } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { useStore } from '../store/index.js'
 import { sendAIMessage, buildSchemaPrompt, buildTableContext } from '../api/ai.js'
 import * as gptbotsApi from '../api/gptbots.js'
+import Modal from '../components/ui/Modal.jsx'
 
 const makeWelcome = () => ({
   id: 'welcome',
@@ -15,11 +19,11 @@ const makeWelcome = () => ({
   message: `你好！我是你的 GPTBots 数据库 AI 助手
 
 我可以帮你完成以下操作：
-• **自然语言描述** → 设计并创建数据库表
-• **上传 Mapping 文档**（JSON / Markdown / TXT）→ 自动解析建表
-• **向已有表中添加数据**（只需告诉我表名和内容）
-• **更新 / 删除** 已有表中的记录
-• 回答关于你的数据库结构的任何问题
+- **自然语言描述** → 设计并创建数据库表
+- **上传 Mapping 文档**（JSON / Markdown / TXT）→ 自动解析建表
+- **向已有表中添加数据**（只需告诉我表名和内容）
+- **更新 / 删除** 已有表中的记录
+- 回答关于你的数据库结构的任何问题
 
 **示例指令：**
 \`帮我给 product_agent_mapping 表添加一条记录：product_name=jili, agent_id=agent01, chat_id=123456\`
@@ -35,6 +39,7 @@ export default function Assistant() {
     addTable, addSchema,
     settings,
     chats, setChatMessages, setChatHistory, clearChatSession,
+    chatArchives, archiveChatSession, restoreChatArchive, deleteChatArchive,
     toast,
   } = useStore()
 
@@ -45,12 +50,14 @@ export default function Assistant() {
   const session  = chats[chatKey]
   const messages = session?.messages?.length ? session.messages : [makeWelcome()]
   const history  = session?.history  || []
+  const archives = chatArchives[chatKey] || []
 
   const [loading,      setLoading]      = useState(false)
   const [input,        setInput]        = useState('')
   const [pendingPlan,  setPendingPlan]  = useState(null)
   const [executing,    setExecuting]    = useState(false)
   const [execProgress, setExecProgress] = useState([])
+  const [showArchives, setShowArchives] = useState(false)
 
   const bottomRef   = useRef(null)
   const fileRef     = useRef(null)
@@ -60,7 +67,6 @@ export default function Assistant() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, executing])
 
-  // Auto-resize textarea
   const resizeTextarea = useCallback(() => {
     const el = textareaRef.current
     if (!el) return
@@ -141,20 +147,14 @@ export default function Assistant() {
 
     const createdTableIds = []
     const newTables       = []
-
-    // Maps table name → real GPTBots tableId for tables created THIS plan run
-    // Also seed from known agentTables so CRUD on existing tables works
     const nameToId = {}
     agentTables.forEach((t) => { if (t.name) nameToId[t.name] = t.tableId })
 
-    // Resolve "product_agent_mapping" → real tableId (hex).
-    // Priority: 1) just-created in this run  2) known agentTables  3) treat as literal ID
     const resolveTableId = (nameOrId) => {
       if (!nameOrId || nameOrId === 'undefined' || nameOrId === 'null') return null
       return nameToId[nameOrId] ?? nameOrId
     }
 
-    // Validate it looks like a 24-char MongoDB ObjectId hex (GPTBots table IDs)
     const isValidTableId = (id) => /^[a-f0-9]{24}$/i.test(String(id ?? ''))
 
     for (let i = 0; i < ops.length; i++) {
@@ -164,11 +164,12 @@ export default function Assistant() {
         let result = null
         if (op.op === 'create_table') {
           const res     = await gptbotsApi.createTable(agent, op.params)
-          const tableId = res.data?.data || res.data?.tableId || res.data?.id
-          if (!tableId) throw new Error(`创建表成功但 API 未返回 table_id。\n请复制 GPTBots 控制台中的真实表 ID，然后在「数据库浏览」→「修复」按钮中补录。`)
+          const resBody = res.data
+          const tableId = typeof resBody === 'string' ? resBody
+                        : resBody?.data || resBody?.tableId || resBody?.id
+          if (!tableId) throw new Error(`API 未返回 table_id (响应: ${JSON.stringify(resBody)?.slice(0, 120)})。\n请到 GPTBots 控制台复制表 ID，用「添加已有表」补录。`)
           createdTableIds.push(tableId)
           newTables.push({ tableId, name: op.params.name, description: op.params.description, fields: op.params.fields, agentId: activeAgentId })
-          // Register so subsequent add_records in this same plan can reference by name
           nameToId[op.params.name] = tableId
           result = `表 "${op.params.name}" 创建成功 (ID: ${tableId})`
 
@@ -227,6 +228,26 @@ export default function Assistant() {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input) }
   }
 
+  const handleArchive = () => {
+    const hasUserMessages = session?.messages?.some((m) => m.role === 'user')
+    if (!hasUserMessages) {
+      toast('没有可存档的对话', 'info'); return
+    }
+    const firstUserMsg = messages.find((m) => m.role === 'user')
+    const title = firstUserMsg?.message?.slice(0, 40) || `对话 ${new Date().toLocaleString('zh-CN')}`
+    archiveChatSession(chatKey, title)
+    toast('对话已存档，可在「历史存档」中查看', 'success')
+  }
+
+  const handleRestore = (archiveId) => {
+    if (session?.messages?.length && messages[0]?.id !== 'welcome') {
+      if (!confirm('恢复存档会替换当前对话，是否继续？')) return
+    }
+    restoreChatArchive(chatKey, archiveId)
+    setShowArchives(false)
+    toast('对话已恢复', 'success')
+  }
+
   const quickCRUD = agentTables.slice(0, 3).map((t) => ({
     label: `添加到 ${t.name}`,
     prompt: `我想向 ${t.name} 表（table_id: ${t.tableId}）添加一条新记录，请帮我生成操作计划，并告知需要哪些字段。`,
@@ -250,9 +271,17 @@ export default function Assistant() {
                 : <span style={{ color: 'var(--coral)', fontWeight: 700 }}> · ⚠ 暂无追踪表（数据操作需先在「数据库浏览」添加表）</span>}
             </p>
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={() => { clearChatSession(chatKey); toast('对话已清空', 'info') }}>
-            <Trash2 size={13} /> 清空对话
-          </button>
+          <div className="flex gap-8">
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowArchives(true)} title="查看历史存档">
+              <FolderOpen size={13} /> 历史存档{archives.length > 0 && <span className="badge badge-purple" style={{ marginLeft: 2, padding: '1px 6px', fontSize: '.60rem' }}>{archives.length}</span>}
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={handleArchive} title="存档当前对话并新建">
+              <Archive size={13} /> 存档对话
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => { clearChatSession(chatKey); toast('对话已清空', 'info') }}>
+              <Trash2 size={13} /> 清空对话
+            </button>
+          </div>
         </div>
 
         {quickCRUD.length > 0 && (
@@ -293,7 +322,7 @@ export default function Assistant() {
               ) : (
                 <div>
                   <div className={`chat-bubble ${msg.role}`}>
-                    <MessageContent text={msg.message} />
+                    <MessageContent text={msg.message} raw={msg.raw} role={msg.role} />
                   </div>
                   {msg.role === 'ai' && !loading && !executing && (
                     <div className="flex gap-6 mt-6" style={{ flexWrap: 'wrap' }}>
@@ -388,22 +417,111 @@ export default function Assistant() {
             : <Send size={15} />}
         </button>
       </div>
+
+      {/* Archives modal */}
+      <Modal open={showArchives} onClose={() => setShowArchives(false)} title="历史会话存档" subtitle={`${archives.length} 个存档`} wide>
+        {archives.length === 0 ? (
+          <div className="empty-state" style={{ padding: '40px 20px' }}>
+            <FolderOpen size={36} color="var(--text-soft)" strokeWidth={1.5} />
+            <div className="empty-title">暂无存档</div>
+            <div className="empty-sub">点击「存档对话」保存当前会话后即可在此查看</div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 400, overflowY: 'auto' }}>
+            {[...archives].reverse().map((arc) => (
+              <div key={arc.id} className="archive-item">
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 800, fontSize: '.86rem', color: 'var(--text-dark)' }} className="truncate">{arc.title}</div>
+                  <div className="text-soft" style={{ fontSize: '.72rem' }}>
+                    {new Date(arc.archivedAt).toLocaleString('zh-CN')} · {arc.messages?.length || 0} 条消息
+                  </div>
+                </div>
+                <div className="flex gap-8">
+                  <button className="btn btn-ghost btn-sm" style={{ fontSize: '.72rem' }} onClick={() => handleRestore(arc.id)}>
+                    <FolderOpen size={11} /> 恢复
+                  </button>
+                  <button className="btn-icon" style={{ width: 26, height: 26, borderRadius: 7 }}
+                    onClick={() => { if (confirm('确定删除此存档？')) { deleteChatArchive(chatKey, arc.id); toast('存档已删除', 'info') } }}>
+                    <Trash2 size={11} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="modal-footer">
+          <button className="btn btn-ghost" onClick={() => setShowArchives(false)}>关闭</button>
+        </div>
+      </Modal>
     </div>
   )
 }
 
-// Operation plan card
+// ─── Think Tag Parser ─────────────────────────────────────────────────────────
+function parseThinkContent(text) {
+  if (!text) return { thinking: null, content: '' }
+  const thinkMatch = text.match(/<think>([\s\S]*?)<\/think>/i)
+  if (!thinkMatch) return { thinking: null, content: text }
+  const thinking = thinkMatch[1].trim()
+  const content = text.replace(/<think>[\s\S]*?<\/think>/i, '').trim()
+  return { thinking, content }
+}
+
+// ─── Expandable Thinking Block ────────────────────────────────────────────────
+function ThinkingBlock({ content }) {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <div className="thinking-block">
+      <div className="thinking-header" onClick={() => setExpanded(!expanded)}>
+        <div className="thinking-indicator">
+          <Brain size={13} />
+          <span>思考过程</span>
+        </div>
+        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+      </div>
+      <div className={`thinking-body${expanded ? ' open' : ''}`}>
+        <div className="thinking-content">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Message Content with Markdown + Think Tags ───────────────────────────────
+function MessageContent({ text, raw, role }) {
+  if (!text && !raw) return null
+
+  const source = text || ''
+  const { thinking, content } = parseThinkContent(source)
+
+  if (role === 'user') {
+    return <div className="msg-plain">{source}</div>
+  }
+
+  return (
+    <div>
+      {thinking && <ThinkingBlock content={thinking} />}
+      {content && (
+        <div className="msg-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Operation plan card ──────────────────────────────────────────────────────
 function PlanCard({ msg, isPending, onConfirm, onCancel, agentTables = [] }) {
   const [expanded, setExpanded] = useState({})
   const toggle = (i) => setExpanded((s) => ({ ...s, [i]: !s[i] }))
 
-  // Resolve table name → real ID using known tables
   const resolveDisplay = (nameOrId) => {
     if (!nameOrId || nameOrId === 'undefined' || nameOrId === 'null')
       return <span style={{ color: 'var(--coral)', fontWeight: 700 }}>⚠ 未指定（请先在「数据库浏览」添加此表）</span>
     const known = agentTables.find((t) => t.name === nameOrId || t.tableId === nameOrId)
     if (known) return <><span className="code">{known.name}</span><span className="text-soft" style={{ fontSize: '.70rem', marginLeft: 4 }}>({known.tableId})</span></>
-    // Not in local tracking — show name with warning
     return (
       <span>
         <span className="code">{nameOrId}</span>
@@ -429,7 +547,6 @@ function PlanCard({ msg, isPending, onConfirm, onCancel, agentTables = [] }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {(msg.operations || []).map((op, i) => (
             <div key={i} style={{ background: 'rgba(193,122,255,.06)', borderRadius: 10, border: '1px solid rgba(193,122,255,.12)', overflow: 'hidden' }}>
-              {/* Op header */}
               <div className="op-item" style={{ padding: '8px 12px', cursor: op.op !== 'create_table' ? 'pointer' : 'default' }}
                 onClick={() => (op.op !== 'create_table') && toggle(i)}>
                 <div className="op-item-icon">{opIcon[op.op] || <AlertTriangle size={14} />}</div>
@@ -452,7 +569,6 @@ function PlanCard({ msg, isPending, onConfirm, onCancel, agentTables = [] }) {
                     <div className="op-item-detail">{op.params?.delete_data?.length || 0} 条删除 → 表 {resolveDisplay(op.params?.table_id)}</div>
                   )}
                 </div>
-                {/* Expand toggle for record ops */}
                 {op.op !== 'create_table' && (op.params?.records || op.params?.update_data || op.params?.delete_data) && (
                   <span style={{ fontSize: '.70rem', color: 'var(--text-soft)', fontWeight: 700 }}>
                     {expanded[i] ? '收起 ▲' : '展开 ▼'}
@@ -460,14 +576,12 @@ function PlanCard({ msg, isPending, onConfirm, onCancel, agentTables = [] }) {
                 )}
               </div>
 
-              {/* Expandable record preview */}
               {expanded[i] && (
                 <div style={{ borderTop: '1px solid rgba(193,122,255,.12)', padding: '8px 12px', maxHeight: 240, overflowY: 'auto' }}>
                   <RecordPreview op={op} />
                 </div>
               )}
 
-              {/* For create_table: show full field table */}
               {op.op === 'create_table' && op.params?.fields && (
                 <div style={{ borderTop: '1px solid rgba(193,122,255,.12)', padding: '8px 12px', overflowX: 'auto' }}>
                   <table style={{ width: '100%', fontSize: '.74rem', borderCollapse: 'collapse' }}>
@@ -509,7 +623,7 @@ function PlanCard({ msg, isPending, onConfirm, onCancel, agentTables = [] }) {
   )
 }
 
-// Record data preview inside PlanCard
+// ─── Record data preview inside PlanCard ──────────────────────────────────────
 function RecordPreview({ op }) {
   if (op.op === 'add_records') {
     const records = op.params?.records || []
@@ -562,24 +676,3 @@ function RecordPreview({ op }) {
   }
   return null
 }
-
-function MessageContent({ text }) {
-  return (
-    <div>
-      {text.split('\n').map((line, i) => {
-        if (line.startsWith('• ') || line.startsWith('- ')) {
-          return (
-            <div key={i} style={{ display: 'flex', gap: 6, marginBottom: 2 }}>
-              <span>•</span>
-              <span dangerouslySetInnerHTML={{ __html: boldify(codeify(line.slice(2))) }} />
-            </div>
-          )
-        }
-        return <div key={i} style={{ marginBottom: line === '' ? 6 : 2 }} dangerouslySetInnerHTML={{ __html: boldify(codeify(line)) }} />
-      })}
-    </div>
-  )
-}
-
-const boldify = (s) => s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-const codeify  = (s) => s.replace(/`([^`]+)`/g, '<code style="background:rgba(193,122,255,.12);padding:1px 5px;border-radius:4px;font-size:.85em;font-family:monospace">$1</code>')
