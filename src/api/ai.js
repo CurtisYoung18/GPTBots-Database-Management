@@ -180,11 +180,15 @@ function convertInvokeFormat(text) {
 
 // ─── Send chat to AI ─────────────────────────────────────────────────────────
 // tableContext: optional string listing known tables so AI can do CRUD on them
-export const sendAIMessage = async (settings, messages, tableContext = '') => {
-  // Append live table context to system prompt so AI knows real table IDs
-  const systemContent = tableContext
+// memoryDoc: optional short-term memory to replace older history
+export const sendAIMessage = async (settings, messages, tableContext = '', memoryDoc = '') => {
+  let systemContent = tableContext
     ? `${SYSTEM_PROMPT}\n\n---\n## Existing Tables in Current Agent (use these table_ids for data operations)\n${tableContext}\n---`
     : SYSTEM_PROMPT
+
+  if (memoryDoc) {
+    systemContent += `\n\n---\n## Short-term Memory (summarized from earlier conversation)\n${memoryDoc}\n---\nThe above is a distilled summary of our earlier conversation. Use it as context; the original messages are no longer available.`
+  }
 
   const res = await axios.post('/proxy/ai', {
     url:      settings.aiUrl,
@@ -196,6 +200,30 @@ export const sendAIMessage = async (settings, messages, tableContext = '') => {
   const raw = res.data?.choices?.[0]?.message?.content
   if (!raw) throw new Error('AI 未返回内容，请检查 API 配置')
   return { raw, parsed: parseAIResponse(raw) }
+}
+
+// ─── Summarize chat history into a memory doc ─────────────────────────────────
+const SUMMARIZE_PROMPT = `You are a conversation summarizer. Given the chat history below, produce a concise memory document in the user's language that captures:
+1. Key decisions and conclusions reached
+2. Current state of database tables and operations performed
+3. Important context needed for future interactions (table names, IDs, field structures, business logic discussed)
+4. Any pending tasks or unresolved questions
+
+Output ONLY the summary as plain text (no JSON wrapper). Be thorough but concise. Use bullet points and sections. Write in the same language the user used.`
+
+export const summarizeChatHistory = async (settings, history) => {
+  const res = await axios.post('/proxy/ai', {
+    url:      settings.aiUrl,
+    apiKey:   settings.aiKey,
+    model:    settings.aiModel,
+    messages: [
+      { role: 'system', content: SUMMARIZE_PROMPT },
+      { role: 'user', content: `Please summarize the following conversation:\n\n${history.map((m) => `[${m.role}]: ${m.content}`).join('\n\n')}` },
+    ],
+  })
+  const raw = res.data?.choices?.[0]?.message?.content
+  if (!raw) throw new Error('AI 未返回摘要内容')
+  return raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
 }
 
 // ─── Build table context string for AI ───────────────────────────────────────

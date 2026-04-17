@@ -147,7 +147,23 @@ export const useStore = create(
       clearChatSession: (agentId) =>
         set((s) => {
           const { [agentId]: _, ...rest } = s.chats
-          return { chats: rest }
+          const { [agentId]: _m, ...restMem } = s.chatMemories
+          return { chats: rest, chatMemories: restMem }
+        }),
+
+      // ── Chat short-term memory (per agent) ─────────────────────────────────
+      // chatMemories: Record<agentId, { summary, cutoffMsgId, createdAt }>
+      chatMemories: {},
+
+      setChatMemory: (agentId, memory) =>
+        set((s) => ({
+          chatMemories: { ...s.chatMemories, [agentId]: memory },
+        })),
+
+      clearChatMemory: (agentId) =>
+        set((s) => {
+          const { [agentId]: _, ...rest } = s.chatMemories
+          return { chatMemories: rest }
         }),
 
       // ── Chat Archives (per agent) ────────────────────────────────────────────
@@ -218,6 +234,7 @@ export const useStore = create(
         schemas:       s.schemas,
         settings:      s.settings,
         chats:         s.chats,
+        chatMemories:  s.chatMemories,
         chatArchives:  s.chatArchives,
       }),
       onRehydrateStorage: () => (state) => {

@@ -4,11 +4,12 @@ import {
   Hammer, Plus, Pencil, Check, X, AlertTriangle,
   Loader2, TableProperties, Clock, KeyRound,
   Archive, FolderOpen, ChevronDown, ChevronRight, Brain,
+  BookOpen, Scissors, Sparkles,
 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useStore } from '../store/index.js'
-import { sendAIMessage, buildSchemaPrompt, buildTableContext } from '../api/ai.js'
+import { sendAIMessage, buildSchemaPrompt, buildTableContext, summarizeChatHistory } from '../api/ai.js'
 import * as gptbotsApi from '../api/gptbots.js'
 import Modal from '../components/ui/Modal.jsx'
 
@@ -39,6 +40,7 @@ export default function Assistant() {
     addTable, addSchema,
     settings,
     chats, setChatMessages, setChatHistory, clearChatSession,
+    chatMemories, setChatMemory, clearChatMemory,
     chatArchives, archiveChatSession, restoreChatArchive, deleteChatArchive,
     toast,
   } = useStore()
@@ -51,13 +53,15 @@ export default function Assistant() {
   const messages = session?.messages?.length ? session.messages : [makeWelcome()]
   const history  = session?.history  || []
   const archives = chatArchives[chatKey] || []
+  const memory   = chatMemories[chatKey] || null
 
-  const [loading,      setLoading]      = useState(false)
-  const [input,        setInput]        = useState('')
-  const [pendingPlan,  setPendingPlan]  = useState(null)
-  const [executing,    setExecuting]    = useState(false)
-  const [execProgress, setExecProgress] = useState([])
-  const [showArchives, setShowArchives] = useState(false)
+  const [loading,         setLoading]         = useState(false)
+  const [input,           setInput]           = useState('')
+  const [pendingPlan,     setPendingPlan]     = useState(null)
+  const [executing,       setExecuting]       = useState(false)
+  const [execProgress,    setExecProgress]    = useState([])
+  const [showArchives,    setShowArchives]    = useState(false)
+  const [summarizing,     setSummarizing]     = useState(false)
 
   const bottomRef   = useRef(null)
   const fileRef     = useRef(null)
@@ -79,6 +83,12 @@ export default function Assistant() {
   const addMessage = (msg) => setChatMessages(chatKey, [...messages, msg])
   const updateHistory = (h) => setChatHistory(chatKey, h)
 
+  const getEffectiveHistory = (fullHistory) => {
+    if (!memory?.cutoffIndex) return { historyToSend: fullHistory, memoryDoc: '' }
+    const historyToSend = fullHistory.slice(memory.cutoffIndex)
+    return { historyToSend, memoryDoc: memory.summary }
+  }
+
   const send = async (text) => {
     if (!text.trim()) return
     if (!settings.aiKey) { toast('请先在「设置」中配置 AI API Key', 'error'); return }
@@ -93,8 +103,9 @@ export default function Assistant() {
     setLoading(true)
 
     const tableContext = buildTableContext(agentTables)
+    const { historyToSend, memoryDoc } = getEffectiveHistory(newHist)
     try {
-      const { raw, parsed } = await sendAIMessage(settings, newHist, tableContext)
+      const { raw, parsed } = await sendAIMessage(settings, historyToSend, tableContext, memoryDoc)
       const aiEntry = { id: Date.now() + 1, role: 'ai', ...parsed, raw }
       const finalMsgs = [...newMsgs, aiEntry]
       const finalHist = [...newHist, { role: 'assistant', content: raw }]
@@ -125,8 +136,9 @@ export default function Assistant() {
     setChatHistory(chatKey, newHist)
     setLoading(true)
     const tableContext = buildTableContext(agentTables)
+    const { historyToSend, memoryDoc } = getEffectiveHistory(newHist)
     try {
-      const { raw, parsed } = await sendAIMessage(settings, newHist, tableContext)
+      const { raw, parsed } = await sendAIMessage(settings, historyToSend, tableContext, memoryDoc)
       const aiEntry = { id: Date.now() + 1, role: 'ai', ...parsed, raw }
       setChatMessages(chatKey, [...newMsgs, aiEntry])
       setChatHistory(chatKey, [...newHist, { role: 'assistant', content: raw }])
@@ -248,6 +260,32 @@ export default function Assistant() {
     toast('对话已恢复', 'success')
   }
 
+  const handleSummarize = async () => {
+    if (!history.length) { toast('当前没有可总结的对话', 'info'); return }
+    if (!settings.aiKey) { toast('请先在「设置」中配置 AI API Key', 'error'); return }
+    setSummarizing(true)
+    try {
+      const summary = await summarizeChatHistory(settings, history)
+      const lastMsg = messages[messages.length - 1]
+      setChatMemory(chatKey, {
+        summary,
+        cutoffIndex: history.length,
+        cutoffMsgId: lastMsg?.id,
+        createdAt: Date.now(),
+      })
+      const memMsg = {
+        id: `mem-${Date.now()}`,
+        role: 'system',
+        type: 'memory-divider',
+        message: summary,
+      }
+      setChatMessages(chatKey, [...messages, memMsg])
+      toast('短期记忆已更新，之前的对话将不再发送给 AI', 'success')
+    } catch (e) {
+      toast(`记忆更新失败: ${e.message}`, 'error')
+    } finally { setSummarizing(false) }
+  }
+
   const quickCRUD = agentTables.slice(0, 3).map((t) => ({
     label: `添加到 ${t.name}`,
     prompt: `我想向 ${t.name} 表（table_id: ${t.tableId}）添加一条新记录，请帮我生成操作计划，并告知需要哪些字段。`,
@@ -272,6 +310,13 @@ export default function Assistant() {
             </p>
           </div>
           <div className="flex gap-8">
+            <button className="btn btn-ghost btn-sm" onClick={handleSummarize} disabled={summarizing || loading || !history.length}
+              title="让 AI 总结当前对话，生成短期记忆以节省上下文">
+              {summarizing
+                ? <Loader2 size={13} style={{ animation: 'spin .7s linear infinite' }} />
+                : <Sparkles size={13} />}
+              {summarizing ? '总结中…' : '更新短期记忆'}
+            </button>
             <button className="btn btn-ghost btn-sm" onClick={() => setShowArchives(true)} title="查看历史存档">
               <FolderOpen size={13} /> 历史存档{archives.length > 0 && <span className="badge badge-purple" style={{ marginLeft: 2, padding: '1px 6px', fontSize: '.60rem' }}>{archives.length}</span>}
             </button>
@@ -304,53 +349,63 @@ export default function Assistant() {
 
       {/* Messages */}
       <div className="chat-messages" style={{ flex: 1, overflowY: 'auto', padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {messages.map((msg) => (
-          <div key={msg.id} className={`chat-bubble-wrap${msg.role === 'user' ? ' user' : ''}`}>
-            <div className="chat-avatar" style={{ background: msg.role === 'ai' ? 'linear-gradient(135deg,var(--lilac),var(--sky))' : 'linear-gradient(135deg,var(--coral),var(--lemon))' }}>
-              {msg.role === 'ai' ? <Bot size={16} color="#fff" /> : <User size={16} color="#fff" />}
-            </div>
+        {messages.map((msg) => {
+          if (msg.type === 'memory-divider') {
+            return <MemoryDivider key={msg.id} summary={msg.message} createdAt={memory?.createdAt} />
+          }
 
-            <div style={{ maxWidth: '72%' }}>
-              {msg.type === 'plan' ? (
-                <PlanCard
-                  msg={msg}
-                  isPending={pendingPlan?.msgId === msg.id && !executing}
-                  onConfirm={() => executePlan(msg)}
-                  onCancel={cancelPlan}
-                  agentTables={agentTables}
-                />
-              ) : (
-                <div>
-                  <div className={`chat-bubble ${msg.role}`}>
-                    <MessageContent text={msg.message} raw={msg.raw} role={msg.role} />
-                  </div>
-                  {msg.role === 'ai' && !loading && !executing && (
-                    <div className="flex gap-6 mt-6" style={{ flexWrap: 'wrap' }}>
-                      <button className="btn btn-ghost btn-sm" style={{ fontSize: '.70rem', padding: '4px 9px' }}
-                        onClick={reanalyze} title="让 AI 重新以操作计划格式输出">
-                        <RotateCcw size={11} /> 重新分析为操作计划
-                      </button>
-                      {msg.raw && (
+          const isAboveCutoff = memory?.cutoffMsgId && msg.id !== 'welcome'
+            && messages.indexOf(msg) <= messages.findIndex((m) => m.id === memory.cutoffMsgId)
+            && msg.type !== 'memory-divider'
+
+          return (
+            <div key={msg.id} className={`chat-bubble-wrap${msg.role === 'user' ? ' user' : ''}${isAboveCutoff ? ' above-cutoff' : ''}`}>
+              <div className="chat-avatar" style={{ background: msg.role === 'ai' ? 'linear-gradient(135deg,var(--lilac),var(--sky))' : 'linear-gradient(135deg,var(--coral),var(--lemon))' }}>
+                {msg.role === 'ai' ? <Bot size={16} color="#fff" /> : <User size={16} color="#fff" />}
+              </div>
+
+              <div style={{ maxWidth: '72%' }}>
+                {msg.type === 'plan' ? (
+                  <PlanCard
+                    msg={msg}
+                    isPending={pendingPlan?.msgId === msg.id && !executing}
+                    onConfirm={() => executePlan(msg)}
+                    onCancel={cancelPlan}
+                    agentTables={agentTables}
+                  />
+                ) : (
+                  <div>
+                    <div className={`chat-bubble ${msg.role}`}>
+                      <MessageContent text={msg.message} raw={msg.raw} role={msg.role} />
+                    </div>
+                    {msg.role === 'ai' && !loading && !executing && (
+                      <div className="flex gap-6 mt-6" style={{ flexWrap: 'wrap' }}>
                         <button className="btn btn-ghost btn-sm" style={{ fontSize: '.70rem', padding: '4px 9px' }}
-                          onClick={() => {
-                            const el = document.getElementById(`raw-${msg.id}`)
-                            if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none'
-                          }}>
-                          查看原始响应
+                          onClick={reanalyze} title="让 AI 重新以操作计划格式输出">
+                          <RotateCcw size={11} /> 重新分析为操作计划
                         </button>
-                      )}
-                    </div>
-                  )}
-                  {msg.raw && (
-                    <div id={`raw-${msg.id}`} style={{ display: 'none', marginTop: 6, background: 'var(--surface2)', borderRadius: 10, padding: '8px 12px', boxShadow: 'var(--in-groove)', maxHeight: 160, overflowY: 'auto' }}>
-                      <pre style={{ fontSize: '.68rem', fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: 'var(--text-mid)' }}>{msg.raw}</pre>
-                    </div>
-                  )}
-                </div>
-              )}
+                        {msg.raw && (
+                          <button className="btn btn-ghost btn-sm" style={{ fontSize: '.70rem', padding: '4px 9px' }}
+                            onClick={() => {
+                              const el = document.getElementById(`raw-${msg.id}`)
+                              if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none'
+                            }}>
+                            查看原始响应
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {msg.raw && (
+                      <div id={`raw-${msg.id}`} style={{ display: 'none', marginTop: 6, background: 'var(--surface2)', borderRadius: 10, padding: '8px 12px', boxShadow: 'var(--in-groove)', maxHeight: 160, overflowY: 'auto' }}>
+                        <pre style={{ fontSize: '.68rem', fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: 'var(--text-mid)' }}>{msg.raw}</pre>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
 
         {/* Execution progress */}
         {executing && execProgress.length > 0 && (
@@ -508,6 +563,37 @@ function MessageContent({ text, raw, role }) {
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Memory Divider ───────────────────────────────────────────────────────────
+function MemoryDivider({ summary, createdAt }) {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <div className="memory-divider">
+      <div className="memory-divider-line">
+        <div className="memory-divider-line-bar" />
+        <div className="memory-divider-badge" onClick={() => setExpanded(!expanded)}>
+          <Scissors size={12} />
+          <span>以上对话已提炼为短期记忆</span>
+          {createdAt && <span className="memory-divider-time">{new Date(createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</span>}
+          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </div>
+        <div className="memory-divider-line-bar" />
+      </div>
+      <div className={`memory-summary-wrap${expanded ? ' open' : ''}`}>
+        <div className="memory-summary">
+          <div className="memory-summary-header">
+            <BookOpen size={13} />
+            <span>AI 短期记忆文档</span>
+          </div>
+          <div className="memory-summary-body">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

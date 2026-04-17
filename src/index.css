@@ -923,6 +923,106 @@ body {
 }
 .archive-item:hover { background: rgba(193,122,255,.06); }
 
+/* ── Memory Divider ── */
+.memory-divider {
+  margin: 8px 0;
+}
+.memory-divider-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.memory-divider-line-bar {
+  flex: 1;
+  height: 1.5px;
+  background: linear-gradient(90deg, transparent, rgba(193,122,255,.35), transparent);
+}
+.memory-divider-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(193,122,255,.12), rgba(136,198,255,.12));
+  border: 1px solid rgba(193,122,255,.20);
+  color: var(--lilac);
+  font-size: .72rem;
+  font-weight: 800;
+  cursor: pointer;
+  user-select: none;
+  transition: all .18s ease;
+  white-space: nowrap;
+}
+.memory-divider-badge:hover {
+  background: linear-gradient(135deg, rgba(193,122,255,.20), rgba(136,198,255,.20));
+  box-shadow: 0 2px 8px rgba(193,122,255,.15);
+}
+.memory-divider-time {
+  color: var(--text-soft);
+  font-weight: 600;
+  font-size: .65rem;
+}
+.memory-summary-wrap {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height .35s cubic-bezier(.4,0,.2,1);
+}
+.memory-summary-wrap.open {
+  max-height: 600px;
+  overflow-y: auto;
+}
+.memory-summary {
+  margin: 10px 32px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(193,122,255,.05), rgba(136,198,255,.05));
+  border: 1px solid rgba(193,122,255,.12);
+  overflow: hidden;
+}
+.memory-summary-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-size: .78rem;
+  font-weight: 800;
+  color: var(--lilac);
+  background: rgba(193,122,255,.06);
+  border-bottom: 1px solid rgba(193,122,255,.08);
+}
+.memory-summary-body {
+  padding: 12px 16px;
+  font-size: .80rem;
+  line-height: 1.6;
+  color: var(--text-mid);
+}
+.memory-summary-body ul, .memory-summary-body ol {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+.memory-summary-body li { margin-bottom: 3px; }
+.memory-summary-body h1, .memory-summary-body h2, .memory-summary-body h3 {
+  font-size: .82rem;
+  font-weight: 800;
+  color: var(--text-dark);
+  margin: 8px 0 4px;
+}
+.memory-summary-body strong { color: var(--text-dark); }
+.memory-summary-body code {
+  background: rgba(193,122,255,.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: .72rem;
+}
+
+/* messages above the memory cutoff get faded */
+.chat-bubble-wrap.above-cutoff {
+  opacity: .45;
+  transition: opacity .3s ease;
+}
+.chat-bubble-wrap.above-cutoff:hover {
+  opacity: .75;
+}
+
 /* ── Lucide icon sizing helpers ── */
 .icon-xs { width: 12px; height: 12px; flex-shrink: 0; }
 .icon-sm { width: 14px; height: 14px; flex-shrink: 0; }
