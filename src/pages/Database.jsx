@@ -62,6 +62,15 @@ export default function Database() {
   }, [agent, pageSize, toast])
 
   useEffect(() => {
+    setSelectedTableId(null)
+    setRecords([])
+    setTableInfo(null)
+    setTotalCount(0)
+    setPage(1)
+    setKeyword('')
+  }, [activeAgentId])
+
+  useEffect(() => {
     if (selectedTable) { setPage(1); setKeyword(''); fetchRecords(selectedTable, 1, '') }
   }, [selectedTable?.id])
 
